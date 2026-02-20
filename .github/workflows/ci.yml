@@ -11,7 +11,7 @@
 name: CI/CD — Financial Analysis Multi-Agent
 
 # ── Triggers ──────────────────────────────────────────────────
-# Run the pipeline when code is pushed to these branches,
+# Run the pipeline on pushes to these branches,
 # OR when a pull-request targets master / main.
 on:
     push:
@@ -19,48 +19,47 @@ on:
     pull_request:
         branches: [master, main]
 
-# ── Shared environment variables ─────────────────────────────
-# Defined once here so every job gets the same Python version
-# without repeating the string.
+# ── Shared environment variables ──────────────────────────────
+# Defined once so every job gets the same Python version.
 env:
     PYTHON_VERSION: "3.11"
 
 jobs:
     # ────────────────────────────────────────────────────────────
     # Job 1 · LINT
-    # Purpose: Catch syntax errors and PEP 8 style violations
-    #          before running any tests. Fails fast so developers
-    #          get feedback in < 1 minute.
+    # Purpose : Catch syntax errors and PEP 8 style violations
+    #           before running any tests (fast feedback, ~1 min).
     # ────────────────────────────────────────────────────────────
     lint:
         name: 🔍 Lint & Static Analysis
-        runs-on: ubuntu-latest # Use the latest Ubuntu GitHub-hosted runner
+        runs-on: ubuntu-latest
 
         steps:
-            # 1-a. Check out the repository so subsequent steps have access to source code.
+            # Check out the repo so subsequent steps have access to source files.
             - name: Checkout code
               uses: actions/checkout@v4
 
-            # 1-b. Install the requested Python version.
-            #      `cache: pip` speeds up runs by reusing previously downloaded wheels.
+            # Install the Python version defined in the global env block.
+            # cache: pip reuses previously downloaded wheels to speed up runs.
             - name: Set up Python ${{ env.PYTHON_VERSION }}
               uses: actions/setup-python@v5
               with:
                   python-version: ${{ env.PYTHON_VERSION }}
                   cache: pip
 
-            # 1-c. Install only the tools needed for linting (keeps this job lightweight).
+            # Install only lint tools — keeps this job lightweight.
             - name: Install lint dependencies
               run: |
                   pip install --upgrade pip
                   pip install flake8 pylint
 
-            # 1-d. STRICT pass: only flag real errors (undefined names, syntax issues).
-            #      The pipeline FAILS if any of these are found.
-            # 1-d. STRICT pass: E9=runtime errors, F63/F7=serious issues, F82=undefined names.
-            #      --show-source prints the offending line; --statistics shows a count per error code.
-            #      The pipeline FAILS if any of these are found.
-            - name: Run flake8 (PEP8 / syntax errors)
+            # STRICT pass — flags real errors only. Pipeline FAILS if any are found.
+            # Selected error codes:
+            #   E9   → syntax / runtime errors (e.g. SyntaxError, IndentationError)
+            #   F63  → invalid escape sequences and similar issues
+            #   F7   → syntax errors caught by pyflakes
+            #   F82  → undefined names (e.g. NameError at runtime)
+            - name: Run flake8 (strict — errors only)
               run: |
                   flake8 . \
                     --count \
@@ -69,11 +68,11 @@ jobs:
                     --statistics \
                     --exclude=multiagent_env,__pycache__,.git
 
-            # 1-e. ADVISORY pass: report style warnings but don't fail the build.
-            #      --exit-zero always exits 0 (treats warnings as informational).
-            #      --max-line-length=120 relaxes the default 79-char limit.
-            #      continue-on-error: true keeps the job green even if warnings exist.
-            - name: Run flake8 (style warnings)
+            # ADVISORY pass — reports style warnings but does NOT fail the build.
+            # --exit-zero   → always exits with code 0 (informational only)
+            # --max-line-length=120 → relaxed from the default 79 chars
+            # continue-on-error keeps the job green even if warnings are reported.
+            - name: Run flake8 (advisory — style warnings)
               run: |
                   flake8 . \
                     --count \
@@ -85,17 +84,17 @@ jobs:
 
     # ────────────────────────────────────────────────────────────
     # Job 2 · UNIT TESTS
-    # Purpose: Run the test suite against multiple Python versions
-    #          to verify nothing is broken after each commit.
-    # Depends on: lint (must pass first)
+    # Purpose : Run pytest against three Python versions in parallel
+    #           to catch compatibility regressions early.
+    # Depends : lint (must pass first)
     # ────────────────────────────────────────────────────────────
     test:
         name: 🧪 Unit Tests
         runs-on: ubuntu-latest
-        needs: lint # Only runs if the lint job succeeded
+        needs: lint
 
-        # Matrix strategy: GitHub spins up one parallel job per Python version,
-        # so we test 3.10, 3.11, and 3.12 simultaneously.
+        # Matrix strategy: GitHub spins up one runner per Python version,
+        # so 3.10, 3.11, and 3.12 run simultaneously.
         strategy:
             matrix:
                 python-version: ["3.10", "3.11", "3.12"]
@@ -104,27 +103,26 @@ jobs:
             - name: Checkout code
               uses: actions/checkout@v4
 
-            # Use the matrix variable here (not the global env.PYTHON_VERSION).
+            # Use the matrix variable (not the global PYTHON_VERSION)
+            # so each matrix leg gets its own version.
             - name: Set up Python ${{ matrix.python-version }}
               uses: actions/setup-python@v5
               with:
                   python-version: ${{ matrix.python-version }}
                   cache: pip
 
-            # Install the full application dependencies defined in requirements.txt.
+            # Install the full runtime dependencies declared in requirements.txt.
             - name: Install dependencies
               run: |
                   pip install --upgrade pip
                   pip install -r requirements.txt
 
-            # Run pytest with a short traceback format.
-            # The DEEPSEEK_API_KEY secret is injected from GitHub repository secrets.
-            # A dummy fallback is provided so CI doesn't hard-fail if the secret is not set.
-            # Run pytest with a short traceback format.
-            # --tb=short: enough detail without overwhelming output.
-            # --timeout=60: kill any test that hangs for more than 60 seconds.
-            # -v: verbose — shows each test name and pass/fail status.
-            # MCP_SERVER_HOST=localhost: points MCP clients at localhost (servers are mocked).
+            # Inject the API key from GitHub Secrets; fall back to a dummy value
+            # so CI doesn't hard-fail if the secret is not configured.
+            # MCP_SERVER_HOST=localhost points MCP clients at localhost (servers are mocked).
+            # --tb=short  → concise tracebacks
+            # --timeout=60 → kill any test that hangs beyond 60 seconds
+            # -v          → verbose output (shows each test name)
             - name: Run pytest
               env:
                   DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
@@ -137,14 +135,14 @@ jobs:
 
     # ────────────────────────────────────────────────────────────
     # Job 3 · SECURITY SCAN
-    # Purpose: Detect common security issues in Python code
-    #          (hardcoded passwords, unsafe calls, etc.) using Bandit.
-    # Depends on: lint
+    # Purpose : Detect common security issues (hardcoded secrets,
+    #           unsafe function calls, etc.) using Bandit.
+    # Depends : lint (runs in parallel with the test job)
     # ────────────────────────────────────────────────────────────
     security:
         name: 🔒 Security Scan
         runs-on: ubuntu-latest
-        needs: lint # Run in parallel with tests, after lint passes
+        needs: lint
 
         steps:
             - name: Checkout code
@@ -160,13 +158,11 @@ jobs:
               run: pip install bandit
 
             # Scan all Python source files recursively.
-            # -x  : exclude directories that don't contain application code
-            # --severity-level medium : only report MEDIUM and HIGH severity issues
-            # -f json : machine-readable output stored as a build artifact
-            # -x excludes dirs with no application code.
-            # --severity-level medium: only report MEDIUM and HIGH severity issues.
-            # -f json: machine-readable output uploaded as a build artifact.
-            # || true: don't fail the pipeline on findings — review the artifact instead.
+            # -x                  → exclude venv and data directories (no application code)
+            # --severity-level medium → report MEDIUM and HIGH severity issues only
+            # -f json             → machine-readable output saved as a build artifact
+            # || true             → don't hard-fail the pipeline on findings;
+            #                       download and review the artifact instead
             - name: Run Bandit security scan
               run: |
                   bandit -r . \
@@ -175,8 +171,8 @@ jobs:
                     -f json -o bandit-report.json \
                     || true
 
-            # Upload the JSON report so it can be downloaded from the Actions run page.
-            # `if: always()` ensures the artifact is uploaded even if Bandit found issues.
+            # Upload the JSON report to the Actions run page so it can be downloaded.
+            # if: always() ensures the upload runs even when Bandit found issues.
             - name: Upload Bandit report
               uses: actions/upload-artifact@v4
               if: always()
@@ -186,14 +182,14 @@ jobs:
 
     # ────────────────────────────────────────────────────────────
     # Job 4 · BUILD & PACKAGE CHECK
-    # Purpose: Verify the full dependency stack installs cleanly
-    #          and that all Python files are syntactically valid.
-    # Depends on: test AND security (both must pass)
+    # Purpose : Verify the full dependency stack installs correctly
+    #           and all Python files are syntactically valid.
+    # Depends : test AND security (both must pass)
     # ────────────────────────────────────────────────────────────
     build:
         name: 📦 Build & Package Check
         runs-on: ubuntu-latest
-        needs: [test, security] # Gate on both upstream jobs
+        needs: [test, security]
 
         steps:
             - name: Checkout code
@@ -210,9 +206,9 @@ jobs:
                   pip install --upgrade pip
                   pip install -r requirements.txt
 
-            # Walk every .py file (skipping venv and cache) and parse it with the
-            # Python AST module. Exits 1 if any file has a syntax error.
-            - name: Verify imports and module structure
+            # Walk every .py file (skipping venv and cache dirs) and parse it with
+            # Python's ast module. Exits with code 1 if any file has a syntax error.
+            - name: Verify Python file syntax
               env:
                   DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
               run: |
@@ -235,8 +231,8 @@ jobs:
                     print('All Python files parse without syntax errors ✅')
                   "
 
-            # Preserve an exact snapshot of the dependencies used in this successful build.
-            # Useful for auditing or rolling back to a known-good state.
+            # Preserve a snapshot of the exact dependencies used in this build.
+            # Useful for auditing or rolling back to a known-good dependency set.
             - name: Upload requirements snapshot
               uses: actions/upload-artifact@v4
               with:
@@ -245,19 +241,19 @@ jobs:
 
     # ────────────────────────────────────────────────────────────
     # Job 5 · DEPLOY TO STAGING
-    # Purpose: Deploy the application after all checks pass.
-    #          Only runs on direct pushes to master (not on PRs).
-    # Depends on: build
+    # Purpose : Deploy the application once all checks pass.
+    #           Only triggers on direct pushes to master — NOT on PRs.
+    # Depends : build
     # ────────────────────────────────────────────────────────────
     deploy-staging:
         name: 🚀 Deploy — Staging
         runs-on: ubuntu-latest
-        needs: build # Only deploy if the build job succeeded
+        needs: build
 
-        # Condition: skip this job for pull-requests — only deploy real merges to master.
+        # Skip for pull-requests — only deploy real merges to master.
         if: github.ref == 'refs/heads/master' && github.event_name == 'push'
 
-        # Link this job to the GitHub "staging" environment.
+        # Link to the GitHub "staging" environment.
         # Environments can require manual approval via protection rules in repo settings.
         environment:
             name: staging
@@ -267,7 +263,7 @@ jobs:
             - name: Checkout code
               uses: actions/checkout@v4
 
-            # Print a clear deployment summary to the Actions log for traceability.
+            # Print a deployment summary for traceability in the Actions log.
             - name: Deployment summary
               run: |
                   echo "======================================"
@@ -280,7 +276,7 @@ jobs:
                   echo "======================================"
                   echo "✅ Staging deployment step complete."
                   echo ""
-                  echo "👉 Replace this step with your actual deploy commands, for example:"
-                  echo "   • docker build -t myapp . && docker push myregistry/myapp"
-                  echo "   • ssh user@server 'cd /app && git pull && systemctl restart myapp'"
-                  echo "   • kubectl rollout restart deployment/financial-analysis"
+                  echo "👉 Replace this step with your actual deploy commands, e.g.:"
+                  echo "   docker build -t myapp . && docker push myregistry/myapp"
+                  echo "   ssh user@server 'cd /app && git pull && systemctl restart myapp'"
+                  echo "   kubectl rollout restart deployment/financial-analysis"
