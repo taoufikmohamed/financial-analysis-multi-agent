@@ -57,26 +57,31 @@ jobs:
 
             # 1-d. STRICT pass: only flag real errors (undefined names, syntax issues).
             #      The pipeline FAILS if any of these are found.
+            # 1-d. STRICT pass: E9=runtime errors, F63/F7=serious issues, F82=undefined names.
+            #      --show-source prints the offending line; --statistics shows a count per error code.
+            #      The pipeline FAILS if any of these are found.
             - name: Run flake8 (PEP8 / syntax errors)
               run: |
                   flake8 . \
                     --count \
-                    --select=E9,F63,F7,F82 \   # E9=runtime errors, F63/F7=serious issues, F82=undefined names
-                    --show-source \            # Print the offending line alongside the error
-                    --statistics \             # Show a summary count per error code
-                    --exclude=multiagent_env,__pycache__,.git   # Skip venv and cache dirs
+                    --select=E9,F63,F7,F82 \
+                    --show-source \
+                    --statistics \
+                    --exclude=multiagent_env,__pycache__,.git
 
             # 1-e. ADVISORY pass: report style warnings but don't fail the build.
-            #      `continue-on-error: true` means the job stays green even if warnings exist.
+            #      --exit-zero always exits 0 (treats warnings as informational).
+            #      --max-line-length=120 relaxes the default 79-char limit.
+            #      continue-on-error: true keeps the job green even if warnings exist.
             - name: Run flake8 (style warnings)
               run: |
                   flake8 . \
                     --count \
-                    --exit-zero \              # Always exit 0 — treat warnings as informational
-                    --max-line-length=120 \    # Allow up to 120 chars (relaxed from default 79)
+                    --exit-zero \
+                    --max-line-length=120 \
                     --statistics \
                     --exclude=multiagent_env,__pycache__,.git
-              continue-on-error: true # Don't block the pipeline on style warnings
+              continue-on-error: true
 
     # ────────────────────────────────────────────────────────────
     # Job 2 · UNIT TESTS
@@ -115,15 +120,20 @@ jobs:
             # Run pytest with a short traceback format.
             # The DEEPSEEK_API_KEY secret is injected from GitHub repository secrets.
             # A dummy fallback is provided so CI doesn't hard-fail if the secret is not set.
+            # Run pytest with a short traceback format.
+            # --tb=short: enough detail without overwhelming output.
+            # --timeout=60: kill any test that hangs for more than 60 seconds.
+            # -v: verbose — shows each test name and pass/fail status.
+            # MCP_SERVER_HOST=localhost: points MCP clients at localhost (servers are mocked).
             - name: Run pytest
               env:
                   DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
-                  MCP_SERVER_HOST: localhost # Point MCP clients at localhost; servers are mocked
+                  MCP_SERVER_HOST: localhost
               run: |
                   pytest \
-                    --tb=short \     # Short traceback — enough detail without overwhelming output
-                    --timeout=60 \   # Kill any test that hangs for more than 60 seconds
-                    -v               # Verbose: show each test name and pass/fail status
+                    --tb=short \
+                    --timeout=60 \
+                    -v
 
     # ────────────────────────────────────────────────────────────
     # Job 3 · SECURITY SCAN
@@ -153,13 +163,17 @@ jobs:
             # -x  : exclude directories that don't contain application code
             # --severity-level medium : only report MEDIUM and HIGH severity issues
             # -f json : machine-readable output stored as a build artifact
+            # -x excludes dirs with no application code.
+            # --severity-level medium: only report MEDIUM and HIGH severity issues.
+            # -f json: machine-readable output uploaded as a build artifact.
+            # || true: don't fail the pipeline on findings — review the artifact instead.
             - name: Run Bandit security scan
               run: |
                   bandit -r . \
                     -x ./multiagent_env,./mock_data,./data \
                     --severity-level medium \
                     -f json -o bandit-report.json \
-                    || true   # Don't fail the pipeline on findings; review the artifact instead
+                    || true
 
             # Upload the JSON report so it can be downloaded from the Actions run page.
             # `if: always()` ensures the artifact is uploaded even if Bandit found issues.
