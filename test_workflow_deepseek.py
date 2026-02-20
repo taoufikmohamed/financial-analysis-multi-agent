@@ -86,4 +86,24 @@ async def test_all_components():
     all_outputs = {
         'extraction': extraction,
         'financial_analysis': financial,
-        'compliance': compliance
+        'compliance': compliance,
+    }
+    quality = await system._quality_check(all_outputs)
+    if quality and 'confidence_score' in quality:
+        print(f"  ✅ Quality confidence: {quality['confidence_score']*100:.1f}%")
+    else:
+        print("  ❌ Quality check failed")
+
+    # Stop MCP servers
+    print("\n4️⃣ Stopping MCP servers...")
+    await stop_mcp_servers(servers)
+    print("✅ Servers stopped")
+
+    print("\n" + "="*60)
+    print("✅ ALL COMPONENT TESTS COMPLETE")
+    print("="*60)
+    return True
+
+
+if __name__ == "__main__":
+    asyncio.run(test_all_components())
