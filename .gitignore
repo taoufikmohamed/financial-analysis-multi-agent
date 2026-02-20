@@ -1,0 +1,50 @@
+# =============================================================
+# .gitignore — Financial Analysis Multi-Agent System
+# =============================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# --- Virtual environments ---
+multiagent_env/
+venv/
+env/
+.venv/
+.env/
+
+# --- Secrets & Environment variables ---
+# NEVER commit API keys or credentials
+.env
+*.env.local
+*.env.production
+
+# --- Generated reports (runtime output, not source) ---
+generated_reports/
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Data / uploaded documents ---
+data/
+mock_data/
+
+# --- Test cache ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
