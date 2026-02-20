@@ -7,6 +7,8 @@ import os
 import sys
 import json
 from datetime import datetime
+import pytest
+from unittest.mock import patch, MagicMock
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,7 +18,12 @@ from mcp_servers import start_mcp_servers, stop_mcp_servers
 from main import FinancialAnalysisMultiAgentSystem
 
 
-async def test_all_components():
+# Import system components
+from mcp_servers import start_mcp_servers, stop_mcp_servers
+from main import FinancialAnalysisMultiAgentSystem
+
+
+async def test_all_components():  # This name is fine for pytest
     """Test all system components"""
     
     print("🧪 TESTING MULTI-AGENT SYSTEM")

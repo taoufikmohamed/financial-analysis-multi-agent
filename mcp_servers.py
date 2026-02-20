@@ -23,7 +23,30 @@ import os
 import json
 import random
 from datetime import datetime
-from mcp import MCPServer
+
+# ---------------------------------------------------------------------------
+# Local MCPServer stub
+
+# ---------------------------------------------------------------------------
+# The four servers in this file are simulation/mock implementations that do
+# not need (and cannot use) the published `mcp` library's MCPServer class,
+# because that class does not exist in the installable package.
+# This lightweight base class provides the same interface so the rest of the
+# file works unchanged.
+
+class MCPServer:
+    """Minimal base class for mock MCP servers used in testing."""
+
+    def __init__(self, server_name: str, version: str, port: int, tools: list):
+        self.server_name = server_name
+        self.version = version
+        self.port = port
+        self.tools = tools
+
+    async def handle_tool_call(self, tool_name: str, parameters: dict) -> dict:
+        raise NotImplementedError
+
+
 from typing import Dict, Any, List
 import traceback
 
