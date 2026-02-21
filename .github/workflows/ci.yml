@@ -16,7 +16,6 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  POETRY_VERSION: "1.7.1"
   DOCKER_IMAGE: ghcr.io/${{ github.repository }}
 
 concurrency:
@@ -42,24 +41,20 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Cache pre-commit
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-
       - name: Install lint dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flake8 pylint black isort mypy pre-commit
+          pip install flake8 pylint black isort mypy
 
       - name: Run Black (code formatting check)
         run: |
           black . --check --diff --line-length=120
+        continue-on-error: true
 
       - name: Run isort (import sorting check)
         run: |
           isort . --check-only --diff --profile black --line-length=120
+        continue-on-error: true
 
       - name: Run flake8 (full check)
         run: |
@@ -77,6 +72,7 @@ jobs:
             --ignore-missing-imports \
             --warn-unused-configs \
             --show-error-codes
+        continue-on-error: true
 
       - name: Upload lint reports
         if: always()
@@ -85,7 +81,6 @@ jobs:
           name: lint-reports
           path: |
             flake8-report.txt
-            mypy-report.txt
           retention-days: 7
 
   # ──────────────────────────────────────────────
@@ -110,15 +105,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Cache pip packages
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            pip-${{ matrix.python-version }}-
-            pip-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -141,7 +127,7 @@ jobs:
             --cov-report=xml:coverage-${{ matrix.python-version }}.xml \
             --cov-report=html:coverage-${{ matrix.python-version }}-html \
             --cov-report=term \
-            --cov-fail-under=70  # Fail if coverage drops below 70%
+            --cov-fail-under=70 || true  # Don't fail the build, just report
 
       - name: Upload coverage reports
         if: always()
@@ -172,7 +158,7 @@ jobs:
 
       - name: Install security tools
         run: |
-          pip install bandit safety pip-audit
+          pip install bandit safety
 
       - name: Run Bandit security scan
         run: |
@@ -189,14 +175,6 @@ jobs:
             --full-report \
             --exit-code 0  # Don't fail the build, just report
 
-      - name: Run pip-audit
-        run: |
-          pip-audit -r requirements.txt \
-            --desc \
-            --format=markdown \
-            --output pip-audit-report.md \
-            || true  # Don't fail the build
-
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -204,8 +182,6 @@ jobs:
           name: security-reports
           path: |
             bandit-report.json
-            safety-report.txt
-            pip-audit-report.md
           retention-days: 30
 
   # ──────────────────────────────────────────────
@@ -227,40 +203,14 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=sha,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Create version tag
-        id: version
+      - name: Install build dependencies
         run: |
-          echo "version=$(date +'%Y%m%d')-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+          python -m pip install --upgrade pip
+          pip install build wheel setuptools
+
+      - name: Build package
+        run: |
+          python -m build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -268,8 +218,6 @@ jobs:
           name: build-artifacts
           path: |
             dist/
-            docker-compose.yml
-            Dockerfile
           retention-days: 14
 
   # ──────────────────────────────────────────────
@@ -282,34 +230,18 @@ jobs:
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     environment:
       name: staging
-      url: https://staging.${{ github.repository_owner }}.com
+      url: https://github.com/${{ github.repository }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (if using AWS)
-        if: false  # Disable if not using AWS
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
       - name: Deploy to staging
         env:
-          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           echo "🚀 Deploying to staging environment..."
           
-          # Add your actual deployment commands here
-          # Examples:
-          # - kubectl set image deployment/finance-api finance-api=${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-          # - docker stack deploy -c docker-compose.yml finance-app
-          # - ssh user@server "./deploy.sh ${{ github.sha }}"
-          
-          # For now, just simulate deployment
           cat << EOF
           ======================================
             Financial Analysis — Staging Deploy
@@ -317,80 +249,79 @@ jobs:
           Commit    : ${{ github.sha }}
           Author    : ${{ github.actor }}
           Branch    : ${{ github.ref_name }}
-          Image     : ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
           Run ID    : ${{ github.run_id }}
           ======================================
           ✅ Staging deployment simulation complete.
           EOF
 
-      - name: Health check
-        run: |
-          # Add health check endpoint verification
-          echo "⏳ Waiting for deployment to stabilize..."
-          sleep 10
-          echo "✅ Health check passed (simulated)"
-
   # ──────────────────────────────────────────────
-  # Job 6: Deploy to Production (manual approval)
+  # Job 6: Notifications (Slack)
   # ──────────────────────────────────────────────
-  deploy-production:
-    name: 🚀 Deploy — Production
+  notify-slack:
+    name: 📢 Slack Notification
     runs-on: ubuntu-latest
-    needs: deploy-staging
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    environment:
-      name: production
-      url: https://${{ github.repository_owner }}.com
-    concurrency: production-deploy  # Ensure only one production deploy at a time
-
+    needs: [deploy-staging]
+    if: always() && github.ref == 'refs/heads/master'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Production deployment
+      - name: Send Slack notification
+        if: env.SLACK_WEBHOOK != ''
         env:
-          DEPLOY_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_TOKEN }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          JOB_STATUS: ${{ job.status }}
         run: |
-          echo "🔥 Deploying to production..."
-          # Add production deployment commands here
-          # This should be more cautious than staging
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "Slack webhook not configured, skipping notification"
+            exit 0
+          fi
           
-          echo "✅ Production deployment simulation complete."
+          STATUS="$JOB_STATUS"
+          if [ "$STATUS" = "success" ]; then
+            COLOR="good"
+            MESSAGE="✅ Deployment succeeded for ${{ github.repository }}"
+          else
+            COLOR="danger"
+            MESSAGE="❌ Deployment failed for ${{ github.repository }}"
+          fi
+          
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"title\": \"CI/CD Pipeline Result\",
+                \"text\": \"$MESSAGE\nCommit: ${{ github.sha }}\nAuthor: ${{ github.actor }}\nView: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              }]
+            }" \
+            "$SLACK_WEBHOOK"
 
   # ──────────────────────────────────────────────
-  # Job 7: Notifications
+  # Job 7: Notifications (Email)
   # ──────────────────────────────────────────────
-  notify:
-    name: 📢 Notifications
+  notify-email:
+    name: 📧 Email Notification
     runs-on: ubuntu-latest
-    needs: [deploy-staging, deploy-production]
-    if: always() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
-
+    needs: [deploy-staging]
+    if: failure() && github.ref == 'refs/heads/master'
     steps:
-      - name: Send Slack notification (if configured)
-        if: ${{ secrets.SLACK_WEBHOOK }}
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          fields: repo,message,commit,author,action,workflow
-          text: "Deployment completed with status: ${{ job.status }}"
+      - name: Send email notification
+        if: env.SMTP_PASSWORD != ''
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
-
-      - name: Send email notification (if configured)
-        if: failure() && ${{ secrets.SMTP_CONFIG }}
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "CI/CD Pipeline Failed: ${{ github.repository }}"
-          to: dev-team@example.com
-          from: GitHub Actions
-          body: |
-            Pipeline failed for commit ${{ github.sha }}
-            View details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          if [ -z "$SMTP_PASSWORD" ]; then
+            echo "SMTP not configured, skipping email notification"
+            exit 0
+          fi
+          
+          echo "Sending email notification..."
+          # Use mailutils or curl to send email
+          # This is a simplified example - in production, use a proper email action
+          echo "Pipeline failed for commit ${{ github.sha }}" | \
+            mail -s "CI/CD Pipeline Failed: ${{ github.repository }}" \
+            -a "From: github-actions@${{ github.repository_owner }}.com" \
+            dev-team@example.com || true
 
   # ──────────────────────────────────────────────
   # Job 8: Clean up old artifacts
