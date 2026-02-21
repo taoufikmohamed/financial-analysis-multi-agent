@@ -3,11 +3,25 @@ name: CI/CD — Financial Analysis Multi-Agent
 on:
   push:
     branches: [master, main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
   pull_request:
     branches: [master, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:  # Allow manual triggers
 
 env:
   PYTHON_VERSION: "3.11"
+  POETRY_VERSION: "1.7.1"
+  DOCKER_IMAGE: ghcr.io/${{ github.repository }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ──────────────────────────────────────────────
@@ -19,6 +33,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better linting
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -26,41 +42,63 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
+      - name: Cache pre-commit
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
       - name: Install lint dependencies
         run: |
-          pip install --upgrade pip
-          pip install flake8 pylint
+          python -m pip install --upgrade pip
+          pip install flake8 pylint black isort mypy pre-commit
 
-      - name: Run flake8 (PEP8 / syntax errors)
+      - name: Run Black (code formatting check)
+        run: |
+          black . --check --diff --line-length=120
+
+      - name: Run isort (import sorting check)
+        run: |
+          isort . --check-only --diff --profile black --line-length=120
+
+      - name: Run flake8 (full check)
         run: |
           flake8 . \
             --count \
-            --select=E9,F63,F7,F82 \
-            --show-source \
-            --statistics \
-            --exclude=multiagent_env,__pycache__,.git
-
-      - name: Run flake8 (style warnings)
-        run: |
-          flake8 . \
-            --count \
-            --exit-zero \
             --max-line-length=120 \
             --statistics \
-            --exclude=multiagent_env,__pycache__,.git
-        continue-on-error: true
+            --exclude=multiagent_env,__pycache__,.git,.venv \
+            --output-file=flake8-report.txt
+
+      - name: Run mypy (type checking)
+        run: |
+          mypy . \
+            --exclude 'multiagent_env|__pycache__|tests/mocks' \
+            --ignore-missing-imports \
+            --warn-unused-configs \
+            --show-error-codes
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-reports
+          path: |
+            flake8-report.txt
+            mypy-report.txt
+          retention-days: 7
 
   # ──────────────────────────────────────────────
-  # Job 2: Unit Tests
+  # Job 2: Unit Tests with Coverage
   # ──────────────────────────────────────────────
   test:
-    name: 🧪 Unit Tests
+    name: 🧪 Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     needs: lint
-
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+      fail-fast: false  # Continue testing other versions even if one fails
 
     steps:
       - name: Checkout code
@@ -72,22 +110,48 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ matrix.python-version }}-
+            pip-
+
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-timeout pytest-xdist pytest-mock
 
-      - name: Run pytest
+      - name: Run tests with coverage
         env:
-          # Use a dummy key so unit tests that mock the API can import safely
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
           MCP_SERVER_HOST: localhost
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest \
+            tests/ \
             --tb=short \
             --timeout=60 \
+            -n auto \
             -v \
-            || true   # non-zero exit won't block CD; adjust as needed
+            --cov=. \
+            --cov-report=xml:coverage-${{ matrix.python-version }}.xml \
+            --cov-report=html:coverage-${{ matrix.python-version }}-html \
+            --cov-report=term \
+            --cov-fail-under=70  # Fail if coverage drops below 70%
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports-python-${{ matrix.python-version }}
+          path: |
+            coverage-${{ matrix.python-version }}.xml
+            coverage-${{ matrix.python-version }}-html/
+          retention-days: 14
 
   # ──────────────────────────────────────────────
   # Job 3: Security Scan
@@ -106,31 +170,52 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Install Bandit
-        run: pip install bandit
+      - name: Install security tools
+        run: |
+          pip install bandit safety pip-audit
 
       - name: Run Bandit security scan
         run: |
           bandit -r . \
-            -x ./multiagent_env,./mock_data,./data \
+            -x ./multiagent_env,./mock_data,./data,./tests \
             --severity-level medium \
+            --confidence-level medium \
             -f json -o bandit-report.json \
-            || true
+            --exit-zero  # Don't fail the build, just report
 
-      - name: Upload Bandit report
-        uses: actions/upload-artifact@v4
+      - name: Run Safety check (vulnerable dependencies)
+        run: |
+          safety check -r requirements.txt \
+            --full-report \
+            --exit-code 0  # Don't fail the build, just report
+
+      - name: Run pip-audit
+        run: |
+          pip-audit -r requirements.txt \
+            --desc \
+            --format=markdown \
+            --output pip-audit-report.md \
+            || true  # Don't fail the build
+
+      - name: Upload security reports
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: bandit-security-report
-          path: bandit-report.json
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.txt
+            pip-audit-report.md
+          retention-days: 30
 
   # ──────────────────────────────────────────────
-  # Job 4: Build & Package Check
+  # Job 4: Build & Package
   # ──────────────────────────────────────────────
   build:
-    name: 📦 Build & Package Check
+    name: 📦 Build & Package
     runs-on: ubuntu-latest
     needs: [test, security]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
 
     steps:
       - name: Checkout code
@@ -142,68 +227,183 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Install all dependencies
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create version tag
+        id: version
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          echo "version=$(date +'%Y%m%d')-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
 
-      - name: Verify imports and module structure
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
-        run: |
-          python -c "
-          import ast, sys, os, pathlib
-
-          errors = []
-          for f in pathlib.Path('.').rglob('*.py'):
-            if any(skip in str(f) for skip in ['multiagent_env', '__pycache__']):
-              continue
-            try:
-              ast.parse(f.read_text(encoding='utf-8'))
-            except SyntaxError as e:
-              errors.append(f'{f}: {e}')
-
-          if errors:
-            print('Syntax errors found:', *errors, sep='\n  ')
-            sys.exit(1)
-          else:
-            print('All Python files parse without syntax errors ✅')
-          "
-
-      - name: Upload requirements snapshot
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: requirements-snapshot
-          path: requirements.txt
+          name: build-artifacts
+          path: |
+            dist/
+            docker-compose.yml
+            Dockerfile
+          retention-days: 14
 
   # ──────────────────────────────────────────────
-  # Job 5: Deploy to Staging (master branch only)
+  # Job 5: Deploy to Staging
   # ──────────────────────────────────────────────
   deploy-staging:
     name: 🚀 Deploy — Staging
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-
     environment:
       name: staging
-      url: https://github.com/${{ github.repository }}
+      url: https://staging.${{ github.repository_owner }}.com
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deployment summary
+      - name: Configure AWS credentials (if using AWS)
+        if: false  # Disable if not using AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Deploy to staging
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          echo "======================================"
-          echo "  Financial Analysis — Staging Deploy"
-          echo "======================================"
-          echo "Commit  : ${{ github.sha }}"
-          echo "Author  : ${{ github.actor }}"
-          echo "Branch  : ${{ github.ref_name }}"
-          echo "Run ID  : ${{ github.run_id }}"
-          echo "======================================"
-          echo "✅ Staging deployment step complete."
-          echo ""
-          echo "👉 Add your actual deploy commands here:"
-          echo "   e.g. docker build & push, SSH deploy, Kubernetes rollout, etc."
+          echo "🚀 Deploying to staging environment..."
+          
+          # Add your actual deployment commands here
+          # Examples:
+          # - kubectl set image deployment/finance-api finance-api=${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          # - docker stack deploy -c docker-compose.yml finance-app
+          # - ssh user@server "./deploy.sh ${{ github.sha }}"
+          
+          # For now, just simulate deployment
+          cat << EOF
+          ======================================
+            Financial Analysis — Staging Deploy
+          ======================================
+          Commit    : ${{ github.sha }}
+          Author    : ${{ github.actor }}
+          Branch    : ${{ github.ref_name }}
+          Image     : ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          Run ID    : ${{ github.run_id }}
+          ======================================
+          ✅ Staging deployment simulation complete.
+          EOF
+
+      - name: Health check
+        run: |
+          # Add health check endpoint verification
+          echo "⏳ Waiting for deployment to stabilize..."
+          sleep 10
+          echo "✅ Health check passed (simulated)"
+
+  # ──────────────────────────────────────────────
+  # Job 6: Deploy to Production (manual approval)
+  # ──────────────────────────────────────────────
+  deploy-production:
+    name: 🚀 Deploy — Production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://${{ github.repository_owner }}.com
+    concurrency: production-deploy  # Ensure only one production deploy at a time
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Production deployment
+        env:
+          DEPLOY_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_TOKEN }}
+        run: |
+          echo "🔥 Deploying to production..."
+          # Add production deployment commands here
+          # This should be more cautious than staging
+          
+          echo "✅ Production deployment simulation complete."
+
+  # ──────────────────────────────────────────────
+  # Job 7: Notifications
+  # ──────────────────────────────────────────────
+  notify:
+    name: 📢 Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+
+    steps:
+      - name: Send Slack notification (if configured)
+        if: ${{ secrets.SLACK_WEBHOOK }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,author,action,workflow
+          text: "Deployment completed with status: ${{ job.status }}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Send email notification (if configured)
+        if: failure() && ${{ secrets.SMTP_CONFIG }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "CI/CD Pipeline Failed: ${{ github.repository }}"
+          to: dev-team@example.com
+          from: GitHub Actions
+          body: |
+            Pipeline failed for commit ${{ github.sha }}
+            View details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  # ──────────────────────────────────────────────
+  # Job 8: Clean up old artifacts
+  # ──────────────────────────────────────────────
+  cleanup:
+    name: 🧹 Cleanup
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 30
+          keep_minimum_runs: 10
