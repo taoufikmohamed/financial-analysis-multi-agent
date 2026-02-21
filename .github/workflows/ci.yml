@@ -159,8 +159,8 @@ jobs:
             coverage-${{ matrix.python-version }}-html/
           retention-days: 14
 
-  # ──────────────────────────────────────────────
-  # Job 3: Security Scan
+    # ──────────────────────────────────────────────
+  # Job 3: Security Scan (Using GitHub Actions)
   # ──────────────────────────────────────────────
   security:
     name: 🔒 Security Scan
@@ -176,24 +176,22 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Install security tools
-        run: |
-          pip install bandit safety
-
       - name: Run Bandit security scan
         run: |
+          pip install bandit
           bandit -r . \
             -x ./multiagent_env,./mock_data,./data,./tests \
             --severity-level medium \
             --confidence-level medium \
             -f json -o bandit-report.json \
-            --exit-zero  # Don't fail the build, just report
+            --exit-zero
 
-      - name: Run Safety check (vulnerable dependencies)
-        run: |
-          safety check -r requirements.txt \
-            --full-report \
-            --exit-code 0  # Don't fail the build, just report
+      - name: Run Safety check using GitHub Action
+        uses: pyupio/safety-action@v1
+        with:
+          api-key: ${{ secrets.SAFETY_API_KEY }}  # Optional for free tier
+          args: -r requirements.txt --full-report
+        continue-on-error: true
 
       - name: Upload security reports
         if: always()
