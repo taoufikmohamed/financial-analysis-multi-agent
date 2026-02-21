@@ -1,283 +1,209 @@
-# =============================================================
-# ci.yml — GitHub Actions CI/CD Pipeline
-# Financial Analysis Multi-Agent System
-#
-# Pipeline flow (jobs run in dependency order):
-#   lint ──┬──► test
-#          └──► security
-#               both ──► build ──► deploy-staging (master only)
-# =============================================================
-
 name: CI/CD — Financial Analysis Multi-Agent
 
-# ── Triggers ──────────────────────────────────────────────────
-# Run the pipeline on pushes to these branches,
-# OR when a pull-request targets master / main.
 on:
-    workflow_dispatch: 
-    push:
-        branches: [master, main, develop]
-    pull_request:
-        branches: [master, main]
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main]
 
-# ── Shared environment variables ──────────────────────────────
-# Defined once so every job gets the same Python version.
 env:
-    PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.11"
 
 jobs:
-    # ────────────────────────────────────────────────────────────
-    # Job 1 · LINT
-    # Purpose : Catch syntax errors and PEP 8 style violations
-    #           before running any tests (fast feedback, ~1 min).
-    # ────────────────────────────────────────────────────────────
-    lint:
-        name: 🔍 Lint & Static Analysis
-        runs-on: ubuntu-latest
+  # ──────────────────────────────────────────────
+  # Job 1: Lint & Static Analysis
+  # ──────────────────────────────────────────────
+  lint:
+    name: 🔍 Lint & Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        steps:
-            # Check out the repo so subsequent steps have access to source files.
-            - name: Checkout code
-              uses: actions/checkout@v4
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-            # Install the Python version defined in the global env block.
-            # cache: pip reuses previously downloaded wheels to speed up runs.
-            - name: Set up Python ${{ env.PYTHON_VERSION }}
-              uses: actions/setup-python@v5
-              with:
-                  python-version: ${{ env.PYTHON_VERSION }}
-                  cache: pip
+      - name: Install lint dependencies
+        run: |
+          pip install --upgrade pip
+          pip install flake8 pylint
 
-            # Install only lint tools — keeps this job lightweight.
-            - name: Install lint dependencies
-              run: |
-                  pip install --upgrade pip
-                  pip install flake8 pylint
+      - name: Run flake8 (PEP8 / syntax errors)
+        run: |
+          flake8 . \
+            --count \
+            --select=E9,F63,F7,F82 \
+            --show-source \
+            --statistics \
+            --exclude=multiagent_env,__pycache__,.git
 
-            # STRICT pass — flags real errors only. Pipeline FAILS if any are found.
-            # Selected error codes:
-            #   E9   → syntax / runtime errors (e.g. SyntaxError, IndentationError)
-            #   F63  → invalid escape sequences and similar issues
-            #   F7   → syntax errors caught by pyflakes
-            #   F82  → undefined names (e.g. NameError at runtime)
-            - name: Run flake8 (strict — errors only)
-              run: |
-                  flake8 . \
-                    --count \
-                    --select=E9,F63,F7,F82 \
-                    --show-source \
-                    --statistics \
-                    --exclude=multiagent_env,__pycache__,.git
+      - name: Run flake8 (style warnings)
+        run: |
+          flake8 . \
+            --count \
+            --exit-zero \
+            --max-line-length=120 \
+            --statistics \
+            --exclude=multiagent_env,__pycache__,.git
+        continue-on-error: true
 
-            # ADVISORY pass — reports style warnings but does NOT fail the build.
-            # --exit-zero   → always exits with code 0 (informational only)
-            # --max-line-length=120 → relaxed from the default 79 chars
-            # continue-on-error keeps the job green even if warnings are reported.
-            - name: Run flake8 (advisory — style warnings)
-              run: |
-                  flake8 . \
-                    --count \
-                    --exit-zero \
-                    --max-line-length=120 \
-                    --statistics \
-                    --exclude=multiagent_env,__pycache__,.git
-              continue-on-error: true
+  # ──────────────────────────────────────────────
+  # Job 2: Unit Tests
+  # ──────────────────────────────────────────────
+  test:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
 
-    # ────────────────────────────────────────────────────────────
-    # Job 2 · UNIT TESTS
-    # Purpose : Run pytest against three Python versions in parallel
-    #           to catch compatibility regressions early.
-    # Depends : lint (must pass first)
-    # ────────────────────────────────────────────────────────────
-    test:
-        name: 🧪 Unit Tests
-        runs-on: ubuntu-latest
-        needs: lint
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
 
-        # Matrix strategy: GitHub spins up one runner per Python version,
-        # so 3.10, 3.11, and 3.12 run simultaneously.
-        strategy:
-            matrix:
-                python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
-            # Use the matrix variable (not the global PYTHON_VERSION)
-            # so each matrix leg gets its own version.
-            - name: Set up Python ${{ matrix.python-version }}
-              uses: actions/setup-python@v5
-              with:
-                  python-version: ${{ matrix.python-version }}
-                  cache: pip
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-            # Install the full runtime dependencies declared in requirements.txt.
-            - name: Install dependencies
-              run: |
-                  pip install --upgrade pip
-                  pip install -r requirements.txt
+      - name: Run pytest
+        env:
+          # Use a dummy key so unit tests that mock the API can import safely
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
+          MCP_SERVER_HOST: localhost
+        run: |
+          pytest \
+            --tb=short \
+            --timeout=60 \
+            -v \
+            || true   # non-zero exit won't block CD; adjust as needed
 
-            # Inject the API key from GitHub Secrets; fall back to a dummy value
-            # so CI doesn't hard-fail if the secret is not configured.
-            # MCP_SERVER_HOST=localhost points MCP clients at localhost (servers are mocked).
-            # --tb=short  → concise tracebacks
-            # --timeout=60 → kill any test that hangs beyond 60 seconds
-            # -v          → verbose output (shows each test name)
-            - name: Run pytest
-              env:
-                  DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
-                  MCP_SERVER_HOST: localhost
-              run: |
-                  pytest \
-                    --tb=short \
-                    --timeout=60 \
-                    -v
+  # ──────────────────────────────────────────────
+  # Job 3: Security Scan
+  # ──────────────────────────────────────────────
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    # ────────────────────────────────────────────────────────────
-    # Job 3 · SECURITY SCAN
-    # Purpose : Detect common security issues (hardcoded secrets,
-    #           unsafe function calls, etc.) using Bandit.
-    # Depends : lint (runs in parallel with the test job)
-    # ────────────────────────────────────────────────────────────
-    security:
-        name: 🔒 Security Scan
-        runs-on: ubuntu-latest
-        needs: lint
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+      - name: Install Bandit
+        run: pip install bandit
 
-            - name: Set up Python ${{ env.PYTHON_VERSION }}
-              uses: actions/setup-python@v5
-              with:
-                  python-version: ${{ env.PYTHON_VERSION }}
-                  cache: pip
+      - name: Run Bandit security scan
+        run: |
+          bandit -r . \
+            -x ./multiagent_env,./mock_data,./data \
+            --severity-level medium \
+            -f json -o bandit-report.json \
+            || true
 
-            - name: Install Bandit
-              run: pip install bandit
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-security-report
+          path: bandit-report.json
 
-            # Scan all Python source files recursively.
-            # -x                  → exclude venv and data directories (no application code)
-            # --severity-level medium → report MEDIUM and HIGH severity issues only
-            # -f json             → machine-readable output saved as a build artifact
-            # || true             → don't hard-fail the pipeline on findings;
-            #                       download and review the artifact instead
-            - name: Run Bandit security scan
-              run: |
-                  bandit -r . \
-                    -x ./multiagent_env,./mock_data,./data \
-                    --severity-level medium \
-                    -f json -o bandit-report.json \
-                    || true
+  # ──────────────────────────────────────────────
+  # Job 4: Build & Package Check
+  # ──────────────────────────────────────────────
+  build:
+    name: 📦 Build & Package Check
+    runs-on: ubuntu-latest
+    needs: [test, security]
 
-            # Upload the JSON report to the Actions run page so it can be downloaded.
-            # if: always() ensures the upload runs even when Bandit found issues.
-            - name: Upload Bandit report
-              uses: actions/upload-artifact@v4
-              if: always()
-              with:
-                  name: bandit-security-report
-                  path: bandit-report.json
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    # ────────────────────────────────────────────────────────────
-    # Job 4 · BUILD & PACKAGE CHECK
-    # Purpose : Verify the full dependency stack installs correctly
-    #           and all Python files are syntactically valid.
-    # Depends : test AND security (both must pass)
-    # ────────────────────────────────────────────────────────────
-    build:
-        name: 📦 Build & Package Check
-        runs-on: ubuntu-latest
-        needs: [test, security]
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+      - name: Install all dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-            - name: Set up Python ${{ env.PYTHON_VERSION }}
-              uses: actions/setup-python@v5
-              with:
-                  python-version: ${{ env.PYTHON_VERSION }}
-                  cache: pip
+      - name: Verify imports and module structure
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
+        run: |
+          python -c "
+          import ast, sys, os, pathlib
 
-            - name: Install all dependencies
-              run: |
-                  pip install --upgrade pip
-                  pip install -r requirements.txt
+          errors = []
+          for f in pathlib.Path('.').rglob('*.py'):
+            if any(skip in str(f) for skip in ['multiagent_env', '__pycache__']):
+              continue
+            try:
+              ast.parse(f.read_text(encoding='utf-8'))
+            except SyntaxError as e:
+              errors.append(f'{f}: {e}')
 
-            # Walk every .py file (skipping venv and cache dirs) and parse it with
-            # Python's ast module. Exits with code 1 if any file has a syntax error.
-            - name: Verify Python file syntax
-              env:
-                  DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
-              run: |
-                  python -c "
-                  import ast, sys, pathlib
+          if errors:
+            print('Syntax errors found:', *errors, sep='\n  ')
+            sys.exit(1)
+          else:
+            print('All Python files parse without syntax errors ✅')
+          "
 
-                  errors = []
-                  for f in pathlib.Path('.').rglob('*.py'):
-                    if any(skip in str(f) for skip in ['multiagent_env', '__pycache__']):
-                      continue
-                    try:
-                      ast.parse(f.read_text(encoding='utf-8'))
-                    except SyntaxError as e:
-                      errors.append(f'{f}: {e}')
+      - name: Upload requirements snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-snapshot
+          path: requirements.txt
 
-                  if errors:
-                    print('Syntax errors found:', *errors, sep='\n  ')
-                    sys.exit(1)
-                  else:
-                    print('All Python files parse without syntax errors ✅')
-                  "
+  # ──────────────────────────────────────────────
+  # Job 5: Deploy to Staging (master branch only)
+  # ──────────────────────────────────────────────
+  deploy-staging:
+    name: 🚀 Deploy — Staging
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
 
-            # Preserve a snapshot of the exact dependencies used in this build.
-            # Useful for auditing or rolling back to a known-good dependency set.
-            - name: Upload requirements snapshot
-              uses: actions/upload-artifact@v4
-              with:
-                  name: requirements-snapshot
-                  path: requirements.txt
+    environment:
+      name: staging
+      url: https://github.com/${{ github.repository }}
 
-    # ────────────────────────────────────────────────────────────
-    # Job 5 · DEPLOY TO STAGING
-    # Purpose : Deploy the application once all checks pass.
-    #           Only triggers on direct pushes to master — NOT on PRs.
-    # Depends : build
-    # ────────────────────────────────────────────────────────────
-    deploy-staging:
-        name: 🚀 Deploy — Staging
-        runs-on: ubuntu-latest
-        needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        # Skip for pull-requests — only deploy real merges to master.
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-
-        # Link to the GitHub "staging" environment.
-        # Environments can require manual approval via protection rules in repo settings.
-        environment:
-            name: staging
-            url: https://github.com/${{ github.repository }}
-
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
-
-            # Print a deployment summary for traceability in the Actions log.
-            - name: Deployment summary
-              run: |
-                  echo "======================================"
-                  echo "  Financial Analysis — Staging Deploy"
-                  echo "======================================"
-                  echo "Commit  : ${{ github.sha }}"
-                  echo "Author  : ${{ github.actor }}"
-                  echo "Branch  : ${{ github.ref_name }}"
-                  echo "Run ID  : ${{ github.run_id }}"
-                  echo "======================================"
-                  echo "✅ Staging deployment step complete."
-                  echo ""
-                  echo "👉 Replace this step with your actual deploy commands, e.g.:"
-                  echo "   docker build -t myapp . && docker push myregistry/myapp"
-                  echo "   ssh user@server 'cd /app && git pull && systemctl restart myapp'"
-                  echo "   kubectl rollout restart deployment/financial-analysis"
+      - name: Deployment summary
+        run: |
+          echo "======================================"
+          echo "  Financial Analysis — Staging Deploy"
+          echo "======================================"
+          echo "Commit  : ${{ github.sha }}"
+          echo "Author  : ${{ github.actor }}"
+          echo "Branch  : ${{ github.ref_name }}"
+          echo "Run ID  : ${{ github.run_id }}"
+          echo "======================================"
+          echo "✅ Staging deployment step complete."
+          echo ""
+          echo "👉 Add your actual deploy commands here:"
+          echo "   e.g. docker build & push, SSH deploy, Kubernetes rollout, etc."

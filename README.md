@@ -71,22 +71,6 @@ The system uses the following specialized components:
 5.  **Risk Assessor Agent**: Synthesizes all data to calculate risk scores.
 6.  **Reporting MCP**: Compiles findings into professional reports.
 
-## CI/CD Pipeline
-
-The system uses GitHub Actions for CI/CD.
-The file 
-ci.yml
- was committed and pushed to master on taoufikmohamed/financial-analysis-multi-agent.
-
-The pipeline has 5 jobs that run in sequence:
-
-#	Job	              What it does
-1	🔍 Lint	flake8 — catches syntax errors & style issues
-2	🧪 Test	pytest across Python 3.10, 3.11, 3.12 matrix
-3	🔒 Security	bandit scan, uploads JSON report as artifact
-4	📦 Build	        Validates all .py file syntax, saves requirements.txt snapshot
-5	🚀 Deploy Staging	 Runs on master push only — add your actual deploy commands there
-
 ## 📝 License
 
 [MIT License](LICENSE)
