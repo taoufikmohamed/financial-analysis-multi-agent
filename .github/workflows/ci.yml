@@ -1,198 +1,281 @@
+# =============================================================================
+# CI/CD PIPELINE SUMMARY
+# =============================================================================
+# This GitHub Actions workflow automates the testing, security scanning,
+# building, and deployment of the Financial Analysis Multi-Agent system.
+#
+# TRIGGERS:
+#   - Push to master/main/develop branches
+#   - Pull requests to master/main branches
+#   - Manual trigger via workflow_dispatch
+#
+# ENVIRONMENT:
+#   - Python 3.11 (default)
+#   - Ubuntu latest runners
+#
+# JOBS OVERVIEW:
+#   1. lint         → Code quality checks (black, isort, flake8, mypy)
+#   2. test         → Unit tests across Python 3.10, 3.11, 3.12
+#   3. security     → Security scanning (Bandit, Safety)
+#   4. build        → Build verification and artifact creation
+#   5. deploy-staging → Staging deployment (master branch only)
+#   6. notify-slack → Slack notifications on completion
+#   7. cleanup      → Clean up old workflow runs
+#
+# ARTIFACTS GENERATED:
+#   - Lint reports
+#   - Coverage reports
+#   - Security reports
+#   - Build artifacts
+#
+# =============================================================================
+
+# Workflow name displayed in GitHub Actions UI
 name: CI/CD — Financial Analysis Multi-Agent
 
+# -----------------------------------------------------------------------------
+# TRIGGER CONFIGURATION
+# -----------------------------------------------------------------------------
 on:
+  # Trigger on pushes to main branches
   push:
-    branches: [master, main, develop]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
+    branches: [master, main, develop]                    # Target branches
+    paths-ignore:                                         # Don't run for these files
+      - '**.md'                                           # Ignore markdown files
+      - 'docs/**'                                         # Ignore documentation changes
+      - '.gitignore'                                      # Ignore gitignore changes
+  
+  # Trigger on pull requests to main branches
   pull_request:
-    branches: [master, main]
+    branches: [master, main]                              # Target branches for PRs
     paths-ignore:
-      - '**.md'
+      - '**.md'                                           
       - 'docs/**'
-  workflow_dispatch:  # Allow manual triggers
+  
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:                                       # Manual trigger button
 
+# -----------------------------------------------------------------------------
+# ENVIRONMENT VARIABLES
+# -----------------------------------------------------------------------------
 env:
-  PYTHON_VERSION: "3.11"
-  DOCKER_IMAGE: ghcr.io/${{ github.repository }}
+  PYTHON_VERSION: "3.11"                                  # Default Python version
+  DOCKER_IMAGE: ghcr.io/${{ github.repository }}          # Docker image registry path
 
+# -----------------------------------------------------------------------------
+# CONCURRENCY CONTROL
+# -----------------------------------------------------------------------------
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}         # Group runs by workflow + branch
+  cancel-in-progress: true                                 # Cancel older runs when new one starts
 
+# -----------------------------------------------------------------------------
+# JOBS DEFINITION
+# -----------------------------------------------------------------------------
 jobs:
-   # ──────────────────────────────────────────────
-  # Job 1: Lint & Static Analysis (Fixed)
-  # ──────────────────────────────────────────────
+  # ===========================================================================
+  # JOB 1: LINT & STATIC ANALYSIS
+  # ===========================================================================
+  # Purpose: Check code quality, formatting, and type hints
+  # Tools: black, isort, flake8, mypy
+  # Non-blocking: Reports issues but doesn't fail the build
+  # ===========================================================================
   lint:
-    name: 🔍 Lint & Static Analysis
-    runs-on: ubuntu-latest
+    name: 🔍 Lint & Static Analysis                         # Display name in UI
+    runs-on: ubuntu-latest                                  # Runner operating system
+    
     steps:
+      # Step 1: Check out the repository code
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4                           # Official checkout action
         with:
-          fetch-depth: 0
+          fetch-depth: 0                                     # Get full history for better linting
 
+      # Step 2: Install Python
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5                       # Official Python setup action
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          python-version: ${{ env.PYTHON_VERSION }}          # Use version from env var
+          cache: pip                                          # Cache pip dependencies
 
+      # Step 3: Install linting tools
       - name: Install lint dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install flake8 pylint black isort mypy
+          python -m pip install --upgrade pip                # Upgrade pip to latest
+          pip install flake8 pylint black isort mypy         # Install all linting tools
 
+      # Step 4: Check code formatting with Black
       - name: Run Black (code formatting check)
         run: |
-          black . --check --diff --line-length=120 || true
-        continue-on-error: true
+          black . --check --diff --line-length=120 || true   # Check formatting, don't fail
+        continue-on-error: true                               # Continue even if this fails
 
+      # Step 5: Check import sorting with isort
       - name: Run isort (import sorting check)
         run: |
-          isort . --check-only --diff --profile black --line-length=120 || true
+          isort . --check-only --diff --profile black --line-length=120 || true  # Check imports
         continue-on-error: true
 
+      # Step 6: Run flake8 for style guide enforcement
       - name: Run flake8 (full check) - Lenient version
         run: |
-          flake8 . \
-            --count \
-            --max-line-length=120 \
-            --statistics \
-            --exclude=multiagent_env,__pycache__,.git,.venv,build,dist \
-            --ignore=E203,E266,E501,W503,F401,F403,F841  \
-            --output-file=flake8-report.txt \
-            --exit-zero  # This makes flake8 return 0 even if issues are found
+          flake8 . \                                          # Run flake8 on current directory
+            --count \                                         # Show issue count
+            --max-line-length=120 \                           # Allow longer lines
+            --statistics \                                    # Show statistics
+            --exclude=multiagent_env,__pycache__,.git,.venv,build,dist  # Folders to ignore
+            --ignore=E203,E266,E501,W503,F401,F403,F841 \     # Errors/warnings to ignore
+            --output-file=flake8-report.txt \                 # Save report to file
+            --exit-zero                                        # Return 0 even if issues found
         continue-on-error: true
 
+      # Step 7: Display flake8 results in the log
       - name: Display flake8 results
-        if: always()
+        if: always()                                          # Always run this step
         run: |
-          if [ -f flake8-report.txt ]; then
+          if [ -f flake8-report.txt ]; then                   # Check if report exists
             echo "📊 Flake8 Results:"
             echo "```"
-            cat flake8-report.txt
+            cat flake8-report.txt                             # Display the report
             echo "```"
-            # Count issues
-            ISSUES=$(wc -l < flake8-report.txt)
+            ISSUES=$(wc -l < flake8-report.txt)               # Count lines (issues)
             echo "Found $ISSUES style issues (non-blocking)"
           else
             echo "✅ No flake8 issues found!"
           fi
 
+      # Step 8: Run mypy for type checking
       - name: Run mypy (type checking) - Lenient version
         run: |
-          mypy . \
-            --exclude 'multiagent_env|__pycache__|tests/mocks|build|dist' \
-            --ignore-missing-imports \
-            --warn-unused-configs \
-            --show-error-codes \
-            --follow-imports=skip \
-            || true  # Don't fail the build
+          mypy . \                                             # Run mypy on current directory
+            --exclude 'multiagent_env|__pycache__|tests/mocks|build|dist'  # Folders to exclude
+            --ignore-missing-imports \                         # Don't fail on missing imports
+            --warn-unused-configs \                            # Warn about unused configs
+            --show-error-codes \                               # Show error codes
+            --follow-imports=skip \                            # Skip following imports
+            || true                                            # Don't fail the build
         continue-on-error: true
 
+      # Step 9: Upload lint reports as artifacts
       - name: Upload lint reports
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: always()                                           # Always upload even if failed
+        uses: actions/upload-artifact@v4                       # Official upload action
         with:
-          name: lint-reports
+          name: lint-reports                                    # Artifact name
           path: |
-            flake8-report.txt
-          retention-days: 7
+            flake8-report.txt                                   # Files to upload
+          retention-days: 7                                     # Keep for 7 days
 
-  # ──────────────────────────────────────────────
-  # Job 2: Unit Tests with Coverage
-  # ──────────────────────────────────────────────
+  # ===========================================================================
+  # JOB 2: UNIT TESTS WITH COVERAGE
+  # ===========================================================================
+  # Purpose: Run tests across multiple Python versions
+  # Depends on: lint job completing successfully
+  # Matrix: Tests Python 3.10, 3.11, and 3.12
+  # Artifacts: Coverage reports in XML and HTML formats
+  # ===========================================================================
   test:
-    name: 🧪 Tests (Python ${{ matrix.python-version }})
+    name: 🧪 Tests (Python ${{ matrix.python-version }})       # Dynamic name with Python version
     runs-on: ubuntu-latest
-    needs: lint
+    needs: lint                                                # Wait for lint to complete
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-      fail-fast: false  # Continue testing other versions even if one fails
+        python-version: ["3.10", "3.11", "3.12"]               # Test these Python versions
+      fail-fast: false                                          # Continue if one version fails
 
     steps:
+      # Step 1: Check out the code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Set up Python (matrix version)
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python-version }}          # Use matrix version
           cache: pip
 
+      # Step 3: Install all dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-timeout pytest-xdist pytest-mock
+          pip install -r requirements.txt                       # Install project deps
+          pip install pytest pytest-cov pytest-timeout pytest-xdist pytest-mock  # Test deps
 
+      # Step 4: Run pytest with coverage
       - name: Run tests with coverage
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'sk-dummy-key-for-ci' }}  # API key or dummy
           MCP_SERVER_HOST: localhost
-          PYTHONPATH: ${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}                   # Add project to Python path
         run: |
-          pytest \
-            tests/ \
-            --tb=short \
-            --timeout=60 \
-            -n auto \
-            -v \
-            --cov=. \
-            --cov-report=xml:coverage-${{ matrix.python-version }}.xml \
-            --cov-report=html:coverage-${{ matrix.python-version }}-html \
-            --cov-report=term \
-            --cov-fail-under=70 || true  # Don't fail the build, just report
+          pytest \                                               # Run pytest
+            tests/ \                                             # Test directory
+            --tb=short \                                         # Short traceback format
+            --timeout=60 \                                       # 60 second timeout per test
+            -n auto \                                            # Parallel execution
+            -v \                                                 # Verbose output
+            --cov=. \                                            # Measure coverage
+            --cov-report=xml:coverage-${{ matrix.python-version }}.xml  # XML report
+            --cov-report=html:coverage-${{ matrix.python-version }}-html  # HTML report
+            --cov-report=term \                                  # Terminal report
+            --cov-fail-under=70 || true                          # Don't fail if coverage <70%
 
+      # Step 5: Upload coverage reports
       - name: Upload coverage reports
-        if: always()
+        if: always()                                             # Always upload
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-reports-python-${{ matrix.python-version }}
+          name: coverage-reports-python-${{ matrix.python-version }}  # Version-specific name
           path: |
             coverage-${{ matrix.python-version }}.xml
             coverage-${{ matrix.python-version }}-html/
-          retention-days: 14
+          retention-days: 14                                      # Keep for 14 days
 
-    # ──────────────────────────────────────────────
-  # Job 3: Security Scan (Using GitHub Actions)
-  # ──────────────────────────────────────────────
+  # ===========================================================================
+  # JOB 3: SECURITY SCAN
+  # ===========================================================================
+  # Purpose: Scan code and dependencies for security vulnerabilities
+  # Depends on: lint job
+  # Tools: Bandit (code scan), Safety (dependency scan)
+  # ===========================================================================
   security:
     name: 🔒 Security Scan
     runs-on: ubuntu-latest
-    needs: lint
+    needs: lint                                                # Wait for lint
+
     steps:
+      # Step 1: Check out the code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Set up Python
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
+      # Step 3: Run Bandit security scan on code
       - name: Run Bandit security scan
         run: |
-          pip install bandit
-          bandit -r . \
-            -x ./multiagent_env,./mock_data,./data,./tests \
-            --severity-level medium \
-            --confidence-level medium \
-            -f json -o bandit-report.json \
-            --exit-zero
+          pip install bandit                                   # Install Bandit
+          bandit -r . \                                         # Recursive scan
+            -x ./multiagent_env,./mock_data,./data,./tests \   # Exclude these dirs
+            --severity-level medium \                           # Only medium+ severity
+            --confidence-level medium \                         # Only medium+ confidence
+            -f json -o bandit-report.json \                     # JSON output
+            --exit-zero                                          # Don't fail the build
 
+      # Step 4: Run Safety check on dependencies
       - name: Run Safety check using GitHub Action
-        uses: pyupio/safety-action@v1
+        uses: pyupio/safety-action@v1                          # Official Safety action
         with:
-          api-key: ${{ secrets.SAFETY_API_KEY }}  # Optional for free tier
-          args: -r requirements.txt --full-report
-        continue-on-error: true
+          api-key: ${{ secrets.SAFETY_API_KEY }}                # Optional API key
+          args: -r requirements.txt --full-report               # Check requirements file
+        continue-on-error: true                                  # Don't fail if issues found
 
+      # Step 5: Upload security reports
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -200,32 +283,40 @@ jobs:
           name: security-reports
           path: |
             bandit-report.json
-          retention-days: 30
+          retention-days: 30                                      # Keep for 30 days
 
-    # ──────────────────────────────────────────────
-  # Job 4: Build Check (Simple Version)
-  # ──────────────────────────────────────────────
+  # ===========================================================================
+  # JOB 4: BUILD CHECK
+  # ===========================================================================
+  # Purpose: Verify the project builds and create artifacts
+  # Depends on: test and security jobs
+  # Only runs on: push to master/main branches
+  # ===========================================================================
   build:
     name: 📦 Build Check
     runs-on: ubuntu-latest
-    needs: [test, security]
+    needs: [test, security]                                      # Wait for both
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
 
     steps:
+      # Step 1: Check out the code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Set up Python
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
+      # Step 3: Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Step 4: Verify Python environment works
       - name: Verify Python imports
         run: |
           python -c "
@@ -234,16 +325,17 @@ jobs:
           print(f'Python version: {sys.version}')
           "
 
+      # Step 5: Create distribution folder with artifacts
       - name: Create dist folder for artifacts
         run: |
-          mkdir -p dist
-          # Copy requirements and main files as artifacts
-          cp requirements.txt dist/
-          cp -r src dist/ 2>/dev/null || echo "No src directory found"
-          cp -r *.py dist/ 2>/dev/null || echo "No Python files in root"
-          echo "Build timestamp: $(date)" > dist/build-info.txt
-          echo "Commit: ${{ github.sha }}" >> dist/build-info.txt
+          mkdir -p dist                                         # Create dist directory
+          cp requirements.txt dist/                             # Copy requirements
+          cp -r src dist/ 2>/dev/null || echo "No src directory found"  # Copy src if exists
+          cp -r *.py dist/ 2>/dev/null || echo "No Python files in root"  # Copy root .py files
+          echo "Build timestamp: $(date)" > dist/build-info.txt  # Add timestamp
+          echo "Commit: ${{ github.sha }}" >> dist/build-info.txt  # Add commit hash
 
+      # Step 6: Upload build artifacts
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -251,28 +343,37 @@ jobs:
           path: |
             dist/
           retention-days: 14
-  # ──────────────────────────────────────────────
-  # Job 5: Deploy to Staging
-  # ──────────────────────────────────────────────
+
+  # ===========================================================================
+  # JOB 5: DEPLOY TO STAGING
+  # ===========================================================================
+  # Purpose: Deploy application to staging environment
+  # Depends on: build job
+  # Only runs on: push to master branch
+  # Environment: staging (with protection rules)
+  # ===========================================================================
   deploy-staging:
     name: 🚀 Deploy — Staging
     runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    needs: build                                                # Wait for build
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'  # Only on master push
     environment:
-      name: staging
-      url: https://github.com/${{ github.repository }}
+      name: staging                                             # Staging environment
+      url: https://github.com/${{ github.repository }}          # Environment URL
 
     steps:
+      # Step 1: Check out the code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Deploy to staging
       - name: Deploy to staging
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}     # API key from secrets
         run: |
           echo "🚀 Deploying to staging environment..."
           
+          # Display deployment information
           cat << EOF
           ======================================
             Financial Analysis — Staging Deploy
@@ -284,29 +385,37 @@ jobs:
           ======================================
           ✅ Staging deployment simulation complete.
           EOF
+          # TODO: Add actual deployment commands here
+          # Examples: docker push, kubectl apply, ssh deploy, etc.
 
-  # ──────────────────────────────────────────────
-  # Job 6: Notifications (Slack)
-  # ──────────────────────────────────────────────
+  # ===========================================================================
+  # JOB 6: SLACK NOTIFICATIONS
+  # ===========================================================================
+  # Purpose: Send deployment status to Slack
+  # Depends on: deploy-staging job
+  # Only runs on: master branch (always, even on failure)
+  # ===========================================================================
   notify-slack:
     name: 📢 Slack Notification
     runs-on: ubuntu-latest
-    needs: [deploy-staging]
-    if: always() && github.ref == 'refs/heads/master'
+    needs: [deploy-staging]                                     # Wait for deploy
+    if: always() && github.ref == 'refs/heads/master'          # Always run on master
+
     steps:
+      # Step 1: Send Slack notification
       - name: Send Slack notification
-        if: env.SLACK_WEBHOOK != ''
+        if: env.SLACK_WEBHOOK != ''                             # Only if webhook exists
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          JOB_STATUS: ${{ job.status }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}           # Slack webhook URL
+          JOB_STATUS: ${{ job.status }}                         # Current job status
         run: |
-          if [ -z "$SLACK_WEBHOOK" ]; then
+          if [ -z "$SLACK_WEBHOOK" ]; then                      # Check if webhook exists
             echo "Slack webhook not configured, skipping notification"
             exit 0
           fi
           
-          STATUS="$JOB_STATUS"
-          if [ "$STATUS" = "success" ]; then
+          STATUS="$JOB_STATUS"                                   # Get job status
+          if [ "$STATUS" = "success" ]; then                     # Set color based on status
             COLOR="good"
             MESSAGE="✅ Deployment succeeded for ${{ github.repository }}"
           else
@@ -314,6 +423,7 @@ jobs:
             MESSAGE="❌ Deployment failed for ${{ github.repository }}"
           fi
           
+          # Send curl request to Slack webhook
           curl -X POST -H 'Content-type: application/json' \
             --data "{
               \"attachments\": [{
@@ -324,18 +434,20 @@ jobs:
             }" \
             "$SLACK_WEBHOOK"
 
-  
-  # ──────────────────────────────────────────────
-  # Job 7: Notifications (Email)
-  # ──────────────────────────────────────────────
+  # ===========================================================================
+  # JOB 7: EMAIL NOTIFICATIONS (DISABLED)
+  # ===========================================================================
+  # Purpose: Send email notifications on failure (currently disabled)
+  # Status: DISABLED - Uncomment to enable
+  # ===========================================================================
   # notify-email:
   #   name: 📧 Email Notification
   #   runs-on: ubuntu-latest
   #   needs: [deploy-staging]
-  #   if: failure() && github.ref == 'refs/heads/master'
+  #   if: failure() && github.ref == 'refs/heads/master'        # Only on failure
   #   steps:
   #     - name: Send email notification
-  #       if: env.SMTP_PASSWORD != ''
+  #       if: env.SMTP_PASSWORD != ''                           # Only if SMTP configured
   #       env:
   #         SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
   #         SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -346,27 +458,31 @@ jobs:
   #           echo "SMTP not configured, skipping email notification"
   #           exit 0
   #         fi
-          
+  #         
   #         echo "Sending email notification..."
-  #         # Use mailutils or curl to send email
-  #         # This is a simplified example - in production, use a proper email action
+  #         # Simple email using mail command
   #         echo "Pipeline failed for commit ${{ github.sha }}" | \
   #           mail -s "CI/CD Pipeline Failed: ${{ github.repository }}" \
   #           -a "From: github-actions@${{ github.repository_owner }}.com" \
-  #           dev-team@example.com || true 
-            
-  # ──────────────────────────────────────────────
-  # Job 8: Clean up old artifacts
-  # ──────────────────────────────────────────────
+  #           dev-team@example.com || true
+
+  # ===========================================================================
+  # JOB 8: CLEANUP OLD ARTIFACTS
+  # ===========================================================================
+  # Purpose: Delete old workflow runs to save space
+  # Runs on: schedule (cron) or manual trigger
+  # ===========================================================================
   cleanup:
     name: 🧹 Cleanup
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'  # Scheduled or manual
+
     steps:
+      # Step 1: Delete old workflow runs
       - name: Delete old workflow runs
-        uses: Mattraks/delete-workflow-runs@v2
+        uses: Mattraks/delete-workflow-runs@v2                 # Third-party action
         with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          retain_days: 30
-          keep_minimum_runs: 10
+          token: ${{ github.token }}                            # GitHub token
+          repository: ${{ github.repository }}                  # Current repo
+          retain_days: 30                                        # Keep last 30 days
+          keep_minimum_runs: 10                                  # Keep at least 10 runs
